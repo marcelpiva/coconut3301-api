@@ -42,8 +42,11 @@ async def get_progress(request: Request):
     if not row:
         return Response(content="null", media_type="application/json")
 
-    # row["data"] is already a JSON string from asyncpg (jsonb column)
-    return Response(content=json.dumps(row["data"]), media_type="application/json")
+    # asyncpg returns jsonb as a raw JSON string by default (no codec registered)
+    data = row["data"]
+    if isinstance(data, str):
+        return Response(content=data, media_type="application/json")
+    return Response(content=json.dumps(data), media_type="application/json")
 
 
 @router.put("/progress")
