@@ -38,6 +38,7 @@ app.include_router(progress_router, prefix="/api/v1")
 app.include_router(leaderboard_router, prefix="/api/v1")
 
 
+@app.get("/")
 @app.get("/health")
 async def health():
     return {"status": "ok"}
