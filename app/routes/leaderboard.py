@@ -2,8 +2,9 @@ import json
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request, Response
+from firebase_admin import auth as fb_auth
 
-from ..auth import verify_token
+from ..auth import verify_token, _get_firebase_app
 from ..database import get_pool
 
 router = APIRouter()
@@ -88,3 +89,58 @@ async def post_leaderboard(puzzle_id: str, request: Request):
     )
 
     return {"status": "ok"}
+
+
+@router.post("/leaderboard-seed")
+async def seed_leaderboard():
+    """One-time endpoint: populate leaderboard from existing user_progress data."""
+    _get_firebase_app()
+    pool = await get_pool()
+
+    rows = await pool.fetch("SELECT uid, data FROM user_progress")
+    inserted = 0
+    now = datetime.now(timezone.utc).isoformat()
+
+    for row in rows:
+        uid = row["uid"]
+        data = row["data"]
+        if isinstance(data, str):
+            data = json.loads(data)
+
+        solved = data.get("solvedPuzzles", [])
+        solve_times = data.get("solveTimes", {})
+        attempts_map = data.get("attempts", {})
+        hints_map = data.get("hintsUsed", {})
+
+        if not solved:
+            continue
+
+        # Look up display name from Firebase Auth
+        try:
+            user = fb_auth.get_user(uid)
+            display_name = user.display_name or "Anonymous"
+        except Exception:
+            display_name = "Anonymous"
+
+        for puzzle_id in solved:
+            solve_time = solve_times.get(puzzle_id, 0)
+            if solve_time <= 0:
+                continue
+
+            await pool.execute(
+                """
+                INSERT INTO leaderboard_entries (puzzle_id, uid, display_name, solve_time, attempts, hints_used, submitted_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (puzzle_id, uid) DO NOTHING
+                """,
+                puzzle_id,
+                uid,
+                display_name,
+                solve_time,
+                attempts_map.get(puzzle_id, 0),
+                hints_map.get(puzzle_id, 0),
+                now,
+            )
+            inserted += 1
+
+    return {"status": "ok", "inserted": inserted, "users_processed": len(rows)}
