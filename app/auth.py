@@ -42,6 +42,26 @@ async def verify_token(request: Request) -> str | None:
         return None
 
 
+async def verify_admin(request: Request) -> dict | None:
+    """Verify Firebase token AND check admin role in admin_users table.
+
+    Returns {"uid": str, "role": str, "email": str} or None.
+    """
+    uid = await verify_token(request)
+    if not uid:
+        return None
+
+    from .database import get_pool
+
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        "SELECT role, email FROM admin_users WHERE uid = $1", uid
+    )
+    if not row:
+        return None
+    return {"uid": uid, "role": row["role"], "email": row["email"]}
+
+
 async def debug_auth_info(request: Request) -> dict:
     """Debug endpoint to diagnose auth issues."""
     info: dict = {}
