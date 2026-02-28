@@ -570,3 +570,176 @@ async def update_config(request: Request):
         after=body,
     )
     return {"success": True}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# GLOSSARY
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/admin/glossary")
+async def list_glossary(request: Request):
+    admin = await verify_admin(request)
+    if not admin or admin["role"] not in ROLES_EDITOR_PLUS:
+        return _unauthorized()
+
+    pool = await get_pool()
+    rows = await pool.fetch('SELECT * FROM glossary ORDER BY "order" ASC')
+
+    return [
+        {
+            "id": r["id"],
+            "order": r["order"],
+            "isActive": r["is_active"],
+            "translations": r["translations"] if isinstance(r["translations"], dict) else json.loads(r["translations"]),
+            "createdAt": r["created_at"],
+            "updatedAt": r["updated_at"],
+        }
+        for r in rows
+    ]
+
+
+@router.post("/admin/glossary")
+async def create_glossary_entry(request: Request):
+    admin = await verify_admin(request)
+    if not admin or admin["role"] not in ROLES_EDITOR_PLUS:
+        return _unauthorized()
+
+    body = await request.json()
+    now = datetime.now(timezone.utc).isoformat()
+    pool = await get_pool()
+
+    await pool.execute(
+        """
+        INSERT INTO glossary (id, "order", is_active, translations, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        """,
+        body["id"],
+        body.get("order", 0),
+        body.get("isActive", True),
+        json.dumps(body.get("translations", {})),
+        now,
+        now,
+    )
+
+    await _audit_log(admin, "create", "glossary", body["id"], after=body)
+    return {"success": True}
+
+
+@router.put("/admin/glossary/{entry_id}")
+async def update_glossary_entry(entry_id: str, request: Request):
+    admin = await verify_admin(request)
+    if not admin or admin["role"] not in ROLES_EDITOR_PLUS:
+        return _unauthorized()
+
+    pool = await get_pool()
+    existing = await pool.fetchrow("SELECT * FROM glossary WHERE id = $1", entry_id)
+    if not existing:
+        return _not_found("Glossary entry")
+
+    body = await request.json()
+    now = datetime.now(timezone.utc).isoformat()
+
+    await pool.execute(
+        """
+        UPDATE glossary SET "order" = $2, is_active = $3, translations = $4, updated_at = $5
+        WHERE id = $1
+        """,
+        entry_id,
+        body.get("order", existing["order"]),
+        body.get("isActive", existing["is_active"]),
+        json.dumps(body.get("translations", existing["translations"])),
+        now,
+    )
+
+    await _audit_log(admin, "update", "glossary", entry_id, before=dict(existing), after=body)
+    return {"success": True}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TTS FILES
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/admin/tts-files")
+async def list_tts_files(request: Request):
+    admin = await verify_admin(request)
+    if not admin or admin["role"] not in ROLES_EDITOR_PLUS:
+        return _unauthorized()
+
+    locale = request.query_params.get("locale")
+    pool = await get_pool()
+
+    if locale:
+        rows = await pool.fetch(
+            "SELECT * FROM tts_files WHERE locale = $1 ORDER BY narration_id",
+            locale,
+        )
+    else:
+        rows = await pool.fetch("SELECT * FROM tts_files ORDER BY locale, narration_id")
+
+    return [
+        {
+            "id": r["id"],
+            "narrationId": r["narration_id"],
+            "locale": r["locale"],
+            "type": r["type"],
+            "durationSecs": r["duration_secs"],
+            "createdAt": r["created_at"],
+        }
+        for r in rows
+    ]
+
+
+@router.post("/admin/tts-files/sync")
+async def sync_tts_files(request: Request):
+    admin = await verify_admin(request)
+    if not admin or admin["role"] not in ROLES_ADMIN_PLUS:
+        return _unauthorized()
+
+    body = await request.json()
+    files = body.get("files", [])
+
+    if not files:
+        return {"success": True, "upserted": 0}
+
+    pool = await get_pool()
+    now = datetime.now(timezone.utc).isoformat()
+    upserted = 0
+
+    for f in files:
+        await pool.execute(
+            """
+            INSERT INTO tts_files (narration_id, locale, type, duration_secs, created_at)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (narration_id, locale) DO UPDATE
+            SET type = $3, duration_secs = $4
+            """,
+            f["narrationId"],
+            f["locale"],
+            f.get("type", "unknown"),
+            f.get("durationSecs"),
+            now,
+        )
+        upserted += 1
+
+    await _audit_log(
+        admin, "sync", "tts_files", f"bulk_{len(files)}",
+        after={"count": len(files), "locale": files[0]["locale"] if files else None},
+    )
+
+    return {"success": True, "upserted": upserted}
+
+
+@router.delete("/admin/glossary/{entry_id}")
+async def delete_glossary_entry(entry_id: str, request: Request):
+    admin = await verify_admin(request)
+    if not admin or admin["role"] not in ROLES_SUPER_ADMIN:
+        return _forbidden()
+
+    pool = await get_pool()
+    existing = await pool.fetchrow("SELECT * FROM glossary WHERE id = $1", entry_id)
+    if not existing:
+        return _not_found("Glossary entry")
+
+    await pool.execute("DELETE FROM glossary WHERE id = $1", entry_id)
+    await _audit_log(admin, "delete", "glossary", entry_id, before=dict(existing))
+    return {"success": True}
