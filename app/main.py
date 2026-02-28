@@ -4,9 +4,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from .auth import debug_auth_info
 from .database import get_pool, close_pool
 from .routes.progress import router as progress_router
 from .routes.leaderboard import router as leaderboard_router
@@ -42,3 +43,8 @@ app.include_router(leaderboard_router, prefix="/api/v1")
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/debug/auth")
+async def debug_auth(request: Request):
+    return await debug_auth_info(request)

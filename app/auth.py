@@ -37,5 +37,44 @@ async def verify_token(request: Request) -> str | None:
     try:
         decoded = auth.verify_id_token(token)
         return decoded["uid"]
-    except Exception:
+    except Exception as e:
+        print(f"[AUTH] Token verification failed: {e}")
         return None
+
+
+async def debug_auth_info(request: Request) -> dict:
+    """Debug endpoint to diagnose auth issues."""
+    info: dict = {}
+
+    # Check env vars
+    info["has_service_account_key"] = bool(
+        os.environ.get("FIREBASE_SERVICE_ACCOUNT_KEY")
+    )
+    info["has_google_cloud_project"] = bool(
+        os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCLOUD_PROJECT")
+    )
+
+    # Check Firebase Admin init
+    try:
+        app = _get_firebase_app()
+        info["firebase_initialized"] = True
+        info["project_id"] = app.project_id
+    except Exception as e:
+        info["firebase_initialized"] = False
+        info["firebase_error"] = str(e)
+
+    # Try verifying token if provided
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        try:
+            decoded = auth.verify_id_token(token)
+            info["token_valid"] = True
+            info["token_uid"] = decoded["uid"]
+        except Exception as e:
+            info["token_valid"] = False
+            info["token_error"] = str(e)
+    else:
+        info["token_provided"] = False
+
+    return info
