@@ -59,9 +59,23 @@ async def put_progress(request: Request):
             media_type="application/json",
         )
 
-    body = await request.json()
+    incoming = await request.json()
 
     pool = await get_pool()
+
+    # Fetch existing data so we can merge instead of overwrite
+    row = await pool.fetchrow(
+        "SELECT data FROM user_progress WHERE uid = $1", uid
+    )
+
+    if row and row["data"]:
+        existing = row["data"]
+        if isinstance(existing, str):
+            existing = json.loads(existing)
+        merged = _merge_progress(existing, incoming)
+    else:
+        merged = incoming
+
     await pool.execute(
         """
         INSERT INTO user_progress (uid, data)
@@ -69,7 +83,86 @@ async def put_progress(request: Request):
         ON CONFLICT (uid) DO UPDATE SET data = $2::jsonb
         """,
         uid,
-        json.dumps(body),
+        json.dumps(merged),
     )
 
     return {"status": "ok"}
+
+
+def _merge_progress(existing: dict, incoming: dict) -> dict:
+    """Merge two progress dicts using union/max/min strategies.
+
+    Mirrors the Dart _merge() in progress_provider.dart.
+    """
+    merged = {}
+
+    # Sets — union (keep all)
+    set_fields = [
+        "solvedPuzzles",
+        "unlockedStages",
+        "unlockedSeasons",
+        "achievements",
+        "unlockedLore",
+        "discoveredTools",
+    ]
+    for field in set_fields:
+        a = existing.get(field, [])
+        b = incoming.get(field, [])
+        merged[field] = list(set(a) | set(b))
+
+    # Maps — max per key (hintsUsed, attempts)
+    max_fields = ["hintsUsed", "attempts"]
+    for field in max_fields:
+        merged[field] = _merge_maps_max(
+            existing.get(field, {}), incoming.get(field, {})
+        )
+
+    # Maps — min per key (solveTimes — best/fastest time wins)
+    min_fields = ["solveTimes"]
+    for field in min_fields:
+        merged[field] = _merge_maps_min(
+            existing.get(field, {}), incoming.get(field, {})
+        )
+
+    # Scalars — max
+    scalar_max_fields = ["globalCooldownEnd", "globalWrongAttempts"]
+    for field in scalar_max_fields:
+        merged[field] = max(
+            existing.get(field, 0), incoming.get(field, 0)
+        )
+
+    # Booleans — OR
+    bool_fields = ["introSeen", "tourSeen"]
+    for field in bool_fields:
+        merged[field] = existing.get(field, False) or incoming.get(field, False)
+
+    # Preserve any extra fields from incoming that we don't explicitly merge
+    known_fields = set(set_fields + max_fields + min_fields + scalar_max_fields + bool_fields)
+    for key in incoming:
+        if key not in known_fields:
+            merged[key] = incoming[key]
+    # Also preserve extra fields from existing that incoming doesn't have
+    for key in existing:
+        if key not in known_fields and key not in merged:
+            merged[key] = existing[key]
+
+    return merged
+
+
+def _merge_maps_max(a: dict, b: dict) -> dict:
+    """Merge two {str: int} maps keeping the max value per key."""
+    result = dict(a)
+    for key, val in b.items():
+        result[key] = max(result.get(key, 0), val)
+    return result
+
+
+def _merge_maps_min(a: dict, b: dict) -> dict:
+    """Merge two {str: int} maps keeping the min value per key."""
+    result = dict(a)
+    for key, val in b.items():
+        if key in result:
+            result[key] = min(result[key], val)
+        else:
+            result[key] = val
+    return result
