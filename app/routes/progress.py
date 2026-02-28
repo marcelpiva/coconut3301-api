@@ -12,8 +12,24 @@ router = APIRouter()
 async def get_progress(request: Request):
     uid = await verify_token(request)
     if not uid:
+        # Include debug info for diagnosing auth failures
+        from ..auth import _get_firebase_app
+        from firebase_admin import auth as fb_auth
+
+        debug_info = {"error": "Unauthorized"}
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+            try:
+                _get_firebase_app()
+                fb_auth.verify_id_token(token)
+            except Exception as e:
+                debug_info["auth_detail"] = str(e)
+        else:
+            debug_info["auth_detail"] = "No Bearer token in Authorization header"
+
         return Response(
-            content=json.dumps({"error": "Unauthorized"}),
+            content=json.dumps(debug_info),
             status_code=401,
             media_type="application/json",
         )
