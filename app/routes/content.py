@@ -156,6 +156,44 @@ async def get_season_content(season_id: str, locale: str = "en"):
     )
 
 
+@router.get("/content/glossary")
+async def get_glossary(locale: str = "en"):
+    """Return all active glossary entries with translations flattened for the locale."""
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT id, "order", translations
+        FROM glossary
+        WHERE is_active = true
+        ORDER BY "order" ASC
+        """
+    )
+
+    entries = []
+    for row in rows:
+        t = _extract_translation(row["translations"], locale)
+        if not t.get("term"):
+            continue
+        entries.append({
+            "id": row["id"],
+            "order": row["order"],
+            "term": t.get("term", ""),
+            "aliases": t.get("aliases", []),
+            "summary": t.get("summary", ""),
+            "history": t.get("history", ""),
+            "howItWorks": t.get("howItWorks", ""),
+            "analogy": t.get("analogy", ""),
+            "examples": t.get("examples", []),
+            "relatedTerms": t.get("relatedTerms", []),
+        })
+
+    return Response(
+        content=json.dumps({"entries": entries}),
+        media_type="application/json",
+        headers=CACHE_HEADERS,
+    )
+
+
 @router.get("/content/config")
 async def get_config():
     """Return app configuration."""
@@ -170,7 +208,7 @@ async def get_config():
 
     if not row:
         return {
-            "puzzleSource": "local",
+            "puzzleSource": "remote",
             "maintenanceMode": False,
             "minAppVersion": "1.0.0",
         }

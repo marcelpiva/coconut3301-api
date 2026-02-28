@@ -519,7 +519,7 @@ async def get_config(request: Request):
     pool = await get_pool()
     row = await pool.fetchrow("SELECT * FROM app_config WHERE key = 'main'")
     if not row:
-        return {"puzzleSource": "local", "maintenanceMode": False, "minAppVersion": "1.0.0"}
+        return {"puzzleSource": "remote", "maintenanceMode": False, "minAppVersion": "1.0.0"}
 
     return {
         "puzzleSource": row["puzzle_source"],
@@ -558,7 +558,7 @@ async def update_config(request: Request):
             INSERT INTO app_config (key, puzzle_source, maintenance_mode, min_app_version, updated_at)
             VALUES ('main', $1, $2, $3, $4)
             """,
-            body.get("puzzleSource", "local"),
+            body.get("puzzleSource", "remote"),
             body.get("maintenanceMode", False),
             body.get("minAppVersion", "1.0.0"),
             now,
