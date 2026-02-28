@@ -24,22 +24,34 @@ def _get_firebase_app() -> firebase_admin.App:
 
 async def verify_token(request: Request) -> str | None:
     """
-    Extract and verify a Firebase ID token from the Authorization header.
+    Extract and verify a Firebase ID token from the Authorization header,
+    or a session cookie from the X-Session-Cookie header.
     Returns the user's UID or None if invalid.
     """
     _get_firebase_app()
 
+    # 1. Try Bearer token (app / direct API calls)
     auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
-        return None
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        try:
+            decoded = auth.verify_id_token(token)
+            return decoded["uid"]
+        except Exception as e:
+            print(f"[AUTH] Token verification failed: {e}")
+            return None
 
-    token = auth_header[7:]
-    try:
-        decoded = auth.verify_id_token(token)
-        return decoded["uid"]
-    except Exception as e:
-        print(f"[AUTH] Token verification failed: {e}")
-        return None
+    # 2. Try session cookie (admin panel server-side calls)
+    session_cookie = request.headers.get("X-Session-Cookie")
+    if session_cookie:
+        try:
+            decoded = auth.verify_session_cookie(session_cookie, check_revoked=True)
+            return decoded["uid"]
+        except Exception as e:
+            print(f"[AUTH] Session cookie verification failed: {e}")
+            return None
+
+    return None
 
 
 async def verify_admin(request: Request) -> dict | None:
