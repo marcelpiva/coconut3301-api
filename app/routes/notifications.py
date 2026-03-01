@@ -3,8 +3,9 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request, Response
 
-from ..auth import verify_token
+from ..auth import verify_admin, verify_token
 from ..database import get_pool
+from ..services.notification_sender import send_to_all, send_to_user
 
 router = APIRouter()
 
@@ -153,3 +154,83 @@ async def put_notification_preferences(request: Request):
     )
 
     return {"status": "ok"}
+
+
+@router.post("/admin/push")
+async def admin_send_push(request: Request):
+    """Send a push notification (admin only).
+
+    Body:
+      - title: notification title
+      - body: notification body
+      - uid: (optional) target a single user; omit to broadcast to all
+      - data: (optional) extra data payload (e.g. {"route": "/stages"})
+      - category: (optional) preference category (default: "broadcast")
+    """
+    admin = await verify_admin(request)
+    if not admin:
+        return Response(
+            content=json.dumps({"error": "Forbidden"}),
+            status_code=403,
+            media_type="application/json",
+        )
+
+    body = await request.json()
+    title = body.get("title")
+    msg_body = body.get("body")
+    if not title or not msg_body:
+        return Response(
+            content=json.dumps({"error": "Missing title or body"}),
+            status_code=400,
+            media_type="application/json",
+        )
+
+    uid = body.get("uid")
+    data = body.get("data")
+    category = body.get("category", "broadcast")
+
+    if uid:
+        sent = await send_to_user(
+            uid=uid, title=title, body=msg_body, data=data, category=category
+        )
+    else:
+        sent = await send_to_all(
+            title=title, body=msg_body, data=data, category=category
+        )
+
+    return {"status": "ok", "sent": sent}
+
+
+@router.get("/admin/push/log")
+async def admin_push_log(request: Request):
+    """Get recent notification log (admin only)."""
+    admin = await verify_admin(request)
+    if not admin:
+        return Response(
+            content=json.dumps({"error": "Forbidden"}),
+            status_code=403,
+            media_type="application/json",
+        )
+
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT id, uid, type, title, body, sent_at, status
+        FROM notification_log
+        ORDER BY sent_at DESC
+        LIMIT 50
+        """
+    )
+
+    return [
+        {
+            "id": r["id"],
+            "uid": r["uid"],
+            "type": r["type"],
+            "title": r["title"],
+            "body": r["body"],
+            "sentAt": r["sent_at"],
+            "status": r["status"],
+        }
+        for r in rows
+    ]
