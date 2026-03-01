@@ -234,3 +234,123 @@ async def admin_push_log(request: Request):
         }
         for r in rows
     ]
+
+
+# ─── Campaign CRUD ──────────────────────────────────────────
+
+
+@router.post("/admin/campaigns")
+async def create_campaign(request: Request):
+    """Create a scheduled notification campaign (admin only)."""
+    admin = await verify_admin(request)
+    if not admin:
+        return Response(
+            content=json.dumps({"error": "Forbidden"}),
+            status_code=403,
+            media_type="application/json",
+        )
+
+    body = await request.json()
+    title = body.get("title")
+    msg_body = body.get("body")
+    scheduled_at = body.get("scheduledAt")
+    if not title or not msg_body or not scheduled_at:
+        return Response(
+            content=json.dumps({"error": "Missing title, body, or scheduledAt"}),
+            status_code=400,
+            media_type="application/json",
+        )
+
+    now = datetime.now(timezone.utc).isoformat()
+    pool = await get_pool()
+
+    row = await pool.fetchrow(
+        """
+        INSERT INTO notification_campaigns
+            (name, title, body, data, category, target_filter, scheduled_at, status, created_by, created_at)
+        VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, 'scheduled', $8, $9)
+        RETURNING id
+        """,
+        body.get("name", title),
+        title,
+        msg_body,
+        json.dumps(body.get("data")) if body.get("data") else None,
+        body.get("category", "broadcast"),
+        body.get("targetFilter", "all"),
+        scheduled_at,
+        admin["uid"],
+        now,
+    )
+
+    return {"status": "ok", "id": row["id"]}
+
+
+@router.get("/admin/campaigns")
+async def list_campaigns(request: Request):
+    """List notification campaigns (admin only)."""
+    admin = await verify_admin(request)
+    if not admin:
+        return Response(
+            content=json.dumps({"error": "Forbidden"}),
+            status_code=403,
+            media_type="application/json",
+        )
+
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT id, name, title, body, category, target_filter,
+               scheduled_at, sent_at, sent_count, status, created_by, created_at
+        FROM notification_campaigns
+        ORDER BY created_at DESC
+        LIMIT 50
+        """
+    )
+
+    return [
+        {
+            "id": r["id"],
+            "name": r["name"],
+            "title": r["title"],
+            "body": r["body"],
+            "category": r["category"],
+            "targetFilter": r["target_filter"],
+            "scheduledAt": r["scheduled_at"],
+            "sentAt": r["sent_at"],
+            "sentCount": r["sent_count"],
+            "status": r["status"],
+            "createdBy": r["created_by"],
+            "createdAt": r["created_at"],
+        }
+        for r in rows
+    ]
+
+
+@router.delete("/admin/campaigns/{campaign_id}")
+async def cancel_campaign(request: Request, campaign_id: int):
+    """Cancel a scheduled campaign (admin only)."""
+    admin = await verify_admin(request)
+    if not admin:
+        return Response(
+            content=json.dumps({"error": "Forbidden"}),
+            status_code=403,
+            media_type="application/json",
+        )
+
+    pool = await get_pool()
+    result = await pool.execute(
+        """
+        UPDATE notification_campaigns SET status = 'cancelled'
+        WHERE id = $1 AND status = 'scheduled'
+        """,
+        campaign_id,
+    )
+
+    if result == "UPDATE 0":
+        return Response(
+            content=json.dumps({"error": "Campaign not found or not cancellable"}),
+            status_code=404,
+            media_type="application/json",
+        )
+
+    return {"status": "ok"}

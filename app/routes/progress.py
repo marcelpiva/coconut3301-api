@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request, Response
 
@@ -79,14 +80,16 @@ async def put_progress(request: Request):
         existing = None
         merged = incoming
 
+    now = datetime.now(timezone.utc).isoformat()
     await pool.execute(
         """
-        INSERT INTO user_progress (uid, data)
-        VALUES ($1, $2::jsonb)
-        ON CONFLICT (uid) DO UPDATE SET data = $2::jsonb
+        INSERT INTO user_progress (uid, data, last_synced_at)
+        VALUES ($1, $2::jsonb, $3)
+        ON CONFLICT (uid) DO UPDATE SET data = $2::jsonb, last_synced_at = $3
         """,
         uid,
         json.dumps(merged),
+        now,
     )
 
     # Detect new stage completions (fire-and-forget)
