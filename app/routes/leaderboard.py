@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import datetime, timezone
 
@@ -5,6 +6,7 @@ from fastapi import APIRouter, Request, Response
 
 from ..auth import verify_token
 from ..database import get_pool
+from ..services.notification_sender import send_to_user
 
 router = APIRouter()
 
@@ -67,6 +69,18 @@ async def post_leaderboard(puzzle_id: str, request: Request):
     if existing:
         return {"status": "ok"}
 
+    # Snapshot top 3 before insertion for displacement detection
+    top3_before = await pool.fetch(
+        """
+        SELECT uid FROM leaderboard_entries
+        WHERE puzzle_id = $1
+        ORDER BY solve_time ASC
+        LIMIT 3
+        """,
+        puzzle_id,
+    )
+    top3_uids_before = {row["uid"] for row in top3_before}
+
     await pool.execute(
         """
         INSERT INTO leaderboard_entries (puzzle_id, uid, display_name, solve_time, attempts, hints_used, submitted_at)
@@ -82,4 +96,38 @@ async def post_leaderboard(puzzle_id: str, request: Request):
         now,
     )
 
+    # Check if anyone was displaced from top 3 (fire-and-forget)
+    asyncio.ensure_future(
+        _notify_displaced(pool, puzzle_id, uid, top3_uids_before)
+    )
+
     return {"status": "ok"}
+
+
+async def _notify_displaced(pool, puzzle_id: str, new_uid: str, top3_before: set):
+    """Notify users who were displaced from the top 3 leaderboard."""
+    try:
+        top3_after = await pool.fetch(
+            """
+            SELECT uid FROM leaderboard_entries
+            WHERE puzzle_id = $1
+            ORDER BY solve_time ASC
+            LIMIT 3
+            """,
+            puzzle_id,
+        )
+        top3_uids_after = {row["uid"] for row in top3_after}
+
+        # Users who were in top 3 but aren't anymore
+        displaced = top3_before - top3_uids_after
+        for displaced_uid in displaced:
+            if displaced_uid != new_uid:
+                await send_to_user(
+                    uid=displaced_uid,
+                    title="ALERT: RANK COMPROMISED",
+                    body="Your record has been surpassed. Reclaim your honor, recruit.",
+                    data={"route": "/leaderboard"},
+                    category="competition",
+                )
+    except Exception as e:
+        print(f"[NOTIFY] Displacement notification failed: {e}")

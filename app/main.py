@@ -13,6 +13,7 @@ from .routes.progress import router as progress_router
 from .routes.leaderboard import router as leaderboard_router
 from .routes.content import router as content_router
 from .routes.admin import router as admin_router
+from .routes.notifications import router as notifications_router
 
 
 @asynccontextmanager
@@ -41,6 +42,7 @@ app.include_router(progress_router, prefix="/api/v1")
 app.include_router(leaderboard_router, prefix="/api/v1")
 app.include_router(content_router, prefix="/api/v1")
 app.include_router(admin_router, prefix="/api/v1")
+app.include_router(notifications_router, prefix="/api/v1")
 
 
 @app.get("/")

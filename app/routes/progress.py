@@ -1,9 +1,11 @@
+import asyncio
 import json
 
 from fastapi import APIRouter, Request, Response
 
 from ..auth import verify_token
 from ..database import get_pool
+from ..services.notification_sender import send_to_user
 
 router = APIRouter()
 
@@ -74,6 +76,7 @@ async def put_progress(request: Request):
             existing = json.loads(existing)
         merged = _merge_progress(existing, incoming)
     else:
+        existing = None
         merged = incoming
 
     await pool.execute(
@@ -85,6 +88,12 @@ async def put_progress(request: Request):
         uid,
         json.dumps(merged),
     )
+
+    # Detect new stage completions (fire-and-forget)
+    if existing:
+        asyncio.ensure_future(
+            _notify_stage_completion(pool, uid, existing, merged)
+        )
 
     return {"status": "ok"}
 
@@ -166,3 +175,26 @@ def _merge_maps_min(a: dict, b: dict) -> dict:
         else:
             result[key] = val
     return result
+
+
+async def _notify_stage_completion(pool, uid: str, before: dict, after: dict):
+    """Detect new stage completions and notify the user."""
+    try:
+        old_stages = set(before.get("unlockedStages", []))
+        new_stages = set(after.get("unlockedStages", []))
+        newly_unlocked = new_stages - old_stages
+
+        if not newly_unlocked:
+            return
+
+        # Newly unlocked stages mean the previous stage was just completed
+        for stage_id in newly_unlocked:
+            await send_to_user(
+                uid=uid,
+                title="DOSSIER DECLASSIFIED",
+                body="Stage complete. New operations await, recruit.",
+                data={"route": "/stages"},
+                category="progress",
+            )
+    except Exception as e:
+        print(f"[NOTIFY] Stage completion notification failed: {e}")
