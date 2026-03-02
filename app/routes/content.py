@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from ..auth import verify_token
 from ..database import get_pool
+from ..limiter import limiter
 
 router = APIRouter()
 
@@ -72,8 +73,12 @@ def _extract_translation(translations: dict | str | None, locale: str) -> dict:
 
 
 @router.get("/content/seasons")
-async def get_seasons(locale: str = "en"):
+@limiter.limit("60/minute")
+async def get_seasons(request: Request, locale: str = "en"):
     """Return all active seasons in the same format as seasons_{locale}.json."""
+    uid = await verify_token(request)
+    if not uid:
+        return Response(content='{"error":"Unauthorized"}', status_code=401, media_type="application/json")
     pool = await get_pool()
     rows = await pool.fetch(
         """
@@ -124,13 +129,17 @@ async def get_seasons(locale: str = "en"):
 
 
 @router.get("/content/season/{season_id}")
-async def get_season_content(season_id: str, locale: str = "en"):
+@limiter.limit("60/minute")
+async def get_season_content(request: Request, season_id: str, locale: str = "en"):
     """Return a season's content (stages + puzzles).
 
     Security: puzzle data is stripped of solution-revealing keys (shift, key, method).
     Hints are replaced with hintCount; reveals are not included (use separate endpoints).
     Locked seasons (unlock_date in the future) return 403.
     """
+    uid = await verify_token(request)
+    if not uid:
+        return Response(content='{"error":"Unauthorized"}', status_code=401, media_type="application/json")
     pool = await get_pool()
 
     # Check if season is date-unlocked
@@ -214,8 +223,12 @@ async def get_season_content(season_id: str, locale: str = "en"):
 
 
 @router.get("/content/glossary")
-async def get_glossary(locale: str = "en"):
+@limiter.limit("60/minute")
+async def get_glossary(request: Request, locale: str = "en"):
     """Return all active glossary entries with translations flattened for the locale."""
+    uid = await verify_token(request)
+    if not uid:
+        return Response(content='{"error":"Unauthorized"}', status_code=401, media_type="application/json")
     pool = await get_pool()
     rows = await pool.fetch(
         """
@@ -287,8 +300,12 @@ async def get_config():
 
 
 @router.get("/content/hint/{puzzle_id}/{hint_index}")
-async def get_hint(puzzle_id: str, hint_index: int, locale: str = "en"):
+@limiter.limit("10/minute")
+async def get_hint(request: Request, puzzle_id: str, hint_index: int, locale: str = "en"):
     """Return a single hint for a puzzle by index (0-based)."""
+    uid = await verify_token(request)
+    if not uid:
+        return Response(content='{"error":"Unauthorized"}', status_code=401, media_type="application/json")
     pool = await get_pool()
 
     if not await _is_puzzle_accessible(pool, puzzle_id):
@@ -332,8 +349,12 @@ async def get_hint(puzzle_id: str, hint_index: int, locale: str = "en"):
 
 
 @router.get("/content/reveal/{puzzle_id}")
-async def get_reveal(puzzle_id: str, locale: str = "en"):
+@limiter.limit("10/minute")
+async def get_reveal(request: Request, puzzle_id: str, locale: str = "en"):
     """Return reveal data for a solved puzzle."""
+    uid = await verify_token(request)
+    if not uid:
+        return Response(content='{"error":"Unauthorized"}', status_code=401, media_type="application/json")
     pool = await get_pool()
 
     if not await _is_puzzle_accessible(pool, puzzle_id):
@@ -380,7 +401,8 @@ class VerifyAnswerRequest(BaseModel):
 
 
 @router.post("/content/verify-answer")
-async def verify_answer(body: VerifyAnswerRequest):
+@limiter.limit("30/minute")
+async def verify_answer(request: Request, body: VerifyAnswerRequest):
     """Verify a puzzle answer hash against the stored hash."""
     pool = await get_pool()
 
