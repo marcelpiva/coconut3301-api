@@ -25,14 +25,29 @@ router = APIRouter()
 CACHE_HEADERS = {"Cache-Control": "public, max-age=300"}
 
 
-async def _soft_auth(request: Request) -> str | None:
-    """Verify token but don't block — log warning if missing/invalid."""
-    uid = await verify_token(request)
-    if not uid:
-        auth_header = request.headers.get("Authorization", "")
-        has_token = bool(auth_header)
-        print(f"[CONTENT] Unauthenticated request: path={request.url.path} has_token={has_token}")
-    return uid
+_UNAUTHORIZED = Response(content='{"error":"Unauthorized"}', status_code=401, media_type="application/json")
+
+
+async def _require_auth(request: Request) -> str | None:
+    """Verify Firebase token. Returns uid or None."""
+    return await verify_token(request)
+
+
+async def _get_user_unlocked_seasons(pool, uid: str) -> set:
+    """Fetch the set of season IDs this user has unlocked (from user_progress)."""
+    row = await pool.fetchrow("SELECT data FROM user_progress WHERE uid = $1", uid)
+    if not row or not row["data"]:
+        return {"season_1"}
+    data = row["data"] if isinstance(row["data"], dict) else json.loads(row["data"])
+    return set(data.get("unlockedSeasons", ["season_1"]))
+
+
+def _is_season_accessible(unlock_date_str: str | None, season_id: str, user_seasons: set) -> bool:
+    """Check if a season is accessible: date unlocked OR user has individual unlock."""
+    if _is_date_unlocked(unlock_date_str):
+        return True
+    return season_id in user_seasons
+
 
 # Keys in puzzle `data` that reveal the solution — stripped from public responses.
 _SENSITIVE_DATA_KEYS = {"shift", "key", "method", "alphabet", "answer", "solution", "plaintext"}
@@ -56,11 +71,11 @@ def _is_date_unlocked(unlock_date_str: str | None) -> bool:
         return True
 
 
-async def _is_puzzle_accessible(pool, puzzle_id: str) -> bool:
-    """Check if a puzzle belongs to a date-unlocked season."""
+async def _is_puzzle_accessible(pool, puzzle_id: str, user_seasons: set | None = None) -> bool:
+    """Check if a puzzle belongs to an accessible season (date-unlocked or user-unlocked)."""
     row = await pool.fetchrow(
         """
-        SELECT s.unlock_date
+        SELECT s.id AS season_id, s.unlock_date
         FROM puzzles p
         JOIN stages st ON p.stage_id = st.id
         JOIN seasons s ON st.season_id = s.id
@@ -70,7 +85,11 @@ async def _is_puzzle_accessible(pool, puzzle_id: str) -> bool:
     )
     if not row:
         return False
-    return _is_date_unlocked(row["unlock_date"])
+    if _is_date_unlocked(row["unlock_date"]):
+        return True
+    if user_seasons and row["season_id"] in user_seasons:
+        return True
+    return False
 
 
 def _extract_translation(translations: dict | str | None, locale: str) -> dict:
@@ -86,8 +105,13 @@ def _extract_translation(translations: dict | str | None, locale: str) -> dict:
 @limiter.limit("60/minute")
 async def get_seasons(request: Request, locale: str = "en"):
     """Return all active seasons in the same format as seasons_{locale}.json."""
-    await _soft_auth(request)
+    uid = await _require_auth(request)
+    if not uid:
+        return _UNAUTHORIZED
     pool = await get_pool()
+
+    user_seasons = await _get_user_unlocked_seasons(pool, uid)
+
     rows = await pool.fetch(
         """
         SELECT id, "order", stage_ids, required_season_id, unlock_date,
@@ -101,9 +125,9 @@ async def get_seasons(request: Request, locale: str = "en"):
     seasons = []
     for row in rows:
         t = _extract_translation(row["translations"], locale)
-        unlocked = _is_date_unlocked(row["unlock_date"])
+        accessible = _is_season_accessible(row["unlock_date"], row["id"], user_seasons)
 
-        if unlocked:
+        if accessible:
             seasons.append({
                 "id": row["id"],
                 "name": t.get("name", ""),
@@ -145,15 +169,19 @@ async def get_season_content(request: Request, season_id: str, locale: str = "en
     Hints are replaced with hintCount; reveals are not included (use separate endpoints).
     Locked seasons (unlock_date in the future) return 403.
     """
-    await _soft_auth(request)
+    uid = await _require_auth(request)
+    if not uid:
+        return _UNAUTHORIZED
     pool = await get_pool()
 
-    # Check if season is date-unlocked
+    user_seasons = await _get_user_unlocked_seasons(pool, uid)
+
+    # Check if season is accessible (date-unlocked or user-unlocked)
     season_row = await pool.fetchrow(
         "SELECT unlock_date FROM seasons WHERE id = $1 AND is_active = true",
         season_id,
     )
-    if season_row and not _is_date_unlocked(season_row["unlock_date"]):
+    if season_row and not _is_season_accessible(season_row["unlock_date"], season_id, user_seasons):
         return Response(
             content=json.dumps({"error": "Season not yet available"}),
             status_code=403,
@@ -232,7 +260,9 @@ async def get_season_content(request: Request, season_id: str, locale: str = "en
 @limiter.limit("60/minute")
 async def get_glossary(request: Request, locale: str = "en"):
     """Return all active glossary entries with translations flattened for the locale."""
-    await _soft_auth(request)
+    uid = await _require_auth(request)
+    if not uid:
+        return _UNAUTHORIZED
     pool = await get_pool()
     rows = await pool.fetch(
         """
@@ -307,10 +337,13 @@ async def get_config():
 @limiter.limit("10/minute")
 async def get_hint(request: Request, puzzle_id: str, hint_index: int, locale: str = "en"):
     """Return a single hint for a puzzle by index (0-based)."""
-    await _soft_auth(request)
+    uid = await _require_auth(request)
+    if not uid:
+        return _UNAUTHORIZED
     pool = await get_pool()
 
-    if not await _is_puzzle_accessible(pool, puzzle_id):
+    user_seasons = await _get_user_unlocked_seasons(pool, uid)
+    if not await _is_puzzle_accessible(pool, puzzle_id, user_seasons):
         return Response(
             content=json.dumps({"error": "Season not yet available"}),
             status_code=403,
@@ -354,10 +387,13 @@ async def get_hint(request: Request, puzzle_id: str, hint_index: int, locale: st
 @limiter.limit("10/minute")
 async def get_reveal(request: Request, puzzle_id: str, locale: str = "en"):
     """Return reveal data for a solved puzzle."""
-    await _soft_auth(request)
+    uid = await _require_auth(request)
+    if not uid:
+        return _UNAUTHORIZED
     pool = await get_pool()
 
-    if not await _is_puzzle_accessible(pool, puzzle_id):
+    user_seasons = await _get_user_unlocked_seasons(pool, uid)
+    if not await _is_puzzle_accessible(pool, puzzle_id, user_seasons):
         return Response(
             content=json.dumps({"error": "Season not yet available"}),
             status_code=403,
