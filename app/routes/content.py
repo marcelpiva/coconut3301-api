@@ -151,9 +151,9 @@ async def get_seasons(request: Request, locale: str = "en"):
         if accessible:
             seasons.append({
                 "id": row["id"],
-                "name": t.get("name", ""),
-                "subtitle": t.get("subtitle", ""),
-                "description": t.get("description", ""),
+                "name": t.get("name") or "",
+                "subtitle": t.get("subtitle") or "",
+                "description": t.get("description") or "",
                 "order": row["order"],
                 "stageIds": row["stage_ids"] or [],
                 "requiredSeasonId": row["required_season_id"],
@@ -164,8 +164,8 @@ async def get_seasons(request: Request, locale: str = "en"):
             # Locked season: minimal metadata only, no content references
             seasons.append({
                 "id": row["id"],
-                "name": t.get("name", ""),
-                "subtitle": t.get("subtitle", ""),
+                "name": t.get("name") or "",
+                "subtitle": t.get("subtitle") or "",
                 "description": "",
                 "order": row["order"],
                 "stageIds": [],
@@ -225,11 +225,11 @@ async def get_season_content(request: Request, season_id: str, locale: str = "en
         all_stage_ids.append(row["id"])
         stages.append({
             "id": row["id"],
-            "name": t.get("name", ""),
-            "subtitle": t.get("subtitle", ""),
-            "description": t.get("description", ""),
+            "name": t.get("name") or "",
+            "subtitle": t.get("subtitle") or "",
+            "description": t.get("description") or "",
             "order": row["order"],
-            "requiredPuzzles": row["required_puzzles"],
+            "requiredPuzzles": row["required_puzzles"] or 0,
             "puzzleIds": row["puzzle_ids"] or [],
             "seasonId": row["season_id"],
         })
@@ -248,13 +248,13 @@ async def get_season_content(request: Request, season_id: str, locale: str = "en
     puzzles = []
     for row in puzzle_rows:
         t = _extract_translation(row["translations"], locale)
-        raw_data = t.get("data", {})
-        hints = t.get("hints", [])
+        raw_data = t.get("data") or {}
+        hints = t.get("hints") or []
 
         puzzles.append({
             "id": row["id"],
-            "title": t.get("title", ""),
-            "description": t.get("description", ""),
+            "title": t.get("title") or "",
+            "description": t.get("description") or "",
             "type": row["type"],
             "stageId": row["stage_id"],
             "order": row["order"],
@@ -298,14 +298,14 @@ async def get_glossary(request: Request, locale: str = "en"):
         entries.append({
             "id": row["id"],
             "order": row["order"],
-            "term": t.get("term", ""),
-            "aliases": t.get("aliases", []),
-            "summary": t.get("summary", ""),
-            "history": t.get("history", ""),
-            "howItWorks": t.get("howItWorks", ""),
-            "analogy": t.get("analogy", ""),
-            "examples": t.get("examples", []),
-            "relatedTerms": t.get("relatedTerms", []),
+            "term": t.get("term") or "",
+            "aliases": t.get("aliases") or [],
+            "summary": t.get("summary") or "",
+            "history": t.get("history") or "",
+            "howItWorks": t.get("howItWorks") or "",
+            "analogy": t.get("analogy") or "",
+            "examples": t.get("examples") or [],
+            "relatedTerms": t.get("relatedTerms") or [],
         })
 
     return Response(
@@ -379,7 +379,7 @@ async def get_hint(request: Request, puzzle_id: str, hint_index: int, locale: st
         )
 
     t = _extract_translation(row["translations"], locale)
-    hints = t.get("hints", [])
+    hints = t.get("hints") or []
 
     if hint_index < 0 or hint_index >= len(hints):
         return Response(
@@ -432,9 +432,9 @@ async def get_reveal(request: Request, puzzle_id: str, locale: str = "en"):
     return Response(
         content=json.dumps({
             "puzzleId": row["puzzle_id"],
-            "title": t.get("title", ""),
-            "classification": t.get("classification", ""),
-            "body": t.get("body", ""),
+            "title": t.get("title") or "",
+            "classification": t.get("classification") or "",
+            "body": t.get("body") or "",
             "loreUnlock": row["lore_unlock"],
         }),
         media_type="application/json",
