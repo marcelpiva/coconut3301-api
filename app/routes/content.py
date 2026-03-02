@@ -22,7 +22,8 @@ from ..limiter import limiter
 
 router = APIRouter()
 
-CACHE_HEADERS = {"Cache-Control": "public, max-age=300"}
+CACHE_HEADERS_PUBLIC = {"Cache-Control": "public, max-age=300", "Vary": "Authorization"}
+CACHE_HEADERS_PRIVATE = {"Cache-Control": "private, no-store"}
 
 
 _UNAUTHORIZED = Response(content='{"error":"Unauthorized"}', status_code=401, media_type="application/json")
@@ -174,10 +175,11 @@ async def get_seasons(request: Request, locale: str = "en"):
                 "preview": t.get("preview"),
             })
 
+    cache = CACHE_HEADERS_PRIVATE if uid else CACHE_HEADERS_PUBLIC
     return Response(
         content=json.dumps({"seasons": seasons}),
         media_type="application/json",
-        headers=CACHE_HEADERS,
+        headers=cache,
     )
 
 
@@ -265,13 +267,14 @@ async def get_season_content(request: Request, season_id: str, locale: str = "en
 
     # Reveals are NOT included — fetched on demand via /content/reveal/{puzzle_id}
 
+    cache = CACHE_HEADERS_PRIVATE if uid else CACHE_HEADERS_PUBLIC
     return Response(
         content=json.dumps({
             "stages": stages,
             "puzzles": puzzles,
         }),
         media_type="application/json",
-        headers=CACHE_HEADERS,
+        headers=cache,
     )
 
 
@@ -311,7 +314,7 @@ async def get_glossary(request: Request, locale: str = "en"):
     return Response(
         content=json.dumps({"entries": entries}),
         media_type="application/json",
-        headers=CACHE_HEADERS,
+        headers=CACHE_HEADERS_PUBLIC,
     )
 
 
@@ -341,7 +344,7 @@ async def get_config():
             "minAppVersion": row["min_app_version"],
         }),
         media_type="application/json",
-        headers=CACHE_HEADERS,
+        headers=CACHE_HEADERS_PUBLIC,
     )
 
 
@@ -391,7 +394,7 @@ async def get_hint(request: Request, puzzle_id: str, hint_index: int, locale: st
     return Response(
         content=json.dumps({"hint": hints[hint_index]}),
         media_type="application/json",
-        headers=CACHE_HEADERS,
+        headers=CACHE_HEADERS_PRIVATE,
     )
 
 
@@ -438,7 +441,7 @@ async def get_reveal(request: Request, puzzle_id: str, locale: str = "en"):
             "loreUnlock": row["lore_unlock"],
         }),
         media_type="application/json",
-        headers=CACHE_HEADERS,
+        headers=CACHE_HEADERS_PRIVATE,
     )
 
 
