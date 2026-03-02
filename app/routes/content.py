@@ -10,6 +10,7 @@ Hints and reveals are served via separate on-demand endpoints.
 
 import json
 import os
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import FileResponse
@@ -29,6 +30,36 @@ _SENSITIVE_DATA_KEYS = {"shift", "key", "method", "alphabet", "answer", "solutio
 def _strip_sensitive_data(data: dict) -> dict:
     """Return a copy of puzzle data with solution-revealing keys removed."""
     return {k: v for k, v in data.items() if k not in _SENSITIVE_DATA_KEYS}
+
+
+def _is_date_unlocked(unlock_date_str: str | None) -> bool:
+    """Check if a season's unlock_date has passed (or doesn't exist)."""
+    if not unlock_date_str:
+        return True
+    try:
+        unlock_dt = datetime.fromisoformat(unlock_date_str.replace("Z", "+00:00"))
+        if unlock_dt.tzinfo is None:
+            unlock_dt = unlock_dt.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) >= unlock_dt
+    except (ValueError, TypeError):
+        return True
+
+
+async def _is_puzzle_accessible(pool, puzzle_id: str) -> bool:
+    """Check if a puzzle belongs to a date-unlocked season."""
+    row = await pool.fetchrow(
+        """
+        SELECT s.unlock_date
+        FROM puzzles p
+        JOIN stages st ON p.stage_id = st.id
+        JOIN seasons s ON st.season_id = s.id
+        WHERE p.id = $1 AND p.is_active = true
+        """,
+        puzzle_id,
+    )
+    if not row:
+        return False
+    return _is_date_unlocked(row["unlock_date"])
 
 
 def _extract_translation(translations: dict | str | None, locale: str) -> dict:
@@ -57,17 +88,33 @@ async def get_seasons(locale: str = "en"):
     seasons = []
     for row in rows:
         t = _extract_translation(row["translations"], locale)
-        seasons.append({
-            "id": row["id"],
-            "name": t.get("name", ""),
-            "subtitle": t.get("subtitle", ""),
-            "description": t.get("description", ""),
-            "order": row["order"],
-            "stageIds": row["stage_ids"] or [],
-            "requiredSeasonId": row["required_season_id"],
-            "unlockDate": row["unlock_date"],
-            "preview": t.get("preview"),
-        })
+        unlocked = _is_date_unlocked(row["unlock_date"])
+
+        if unlocked:
+            seasons.append({
+                "id": row["id"],
+                "name": t.get("name", ""),
+                "subtitle": t.get("subtitle", ""),
+                "description": t.get("description", ""),
+                "order": row["order"],
+                "stageIds": row["stage_ids"] or [],
+                "requiredSeasonId": row["required_season_id"],
+                "unlockDate": row["unlock_date"],
+                "preview": t.get("preview"),
+            })
+        else:
+            # Locked season: minimal metadata only, no content references
+            seasons.append({
+                "id": row["id"],
+                "name": t.get("name", ""),
+                "subtitle": t.get("subtitle", ""),
+                "description": "",
+                "order": row["order"],
+                "stageIds": [],
+                "requiredSeasonId": row["required_season_id"],
+                "unlockDate": row["unlock_date"],
+                "preview": t.get("preview"),
+            })
 
     return Response(
         content=json.dumps({"seasons": seasons}),
@@ -82,8 +129,21 @@ async def get_season_content(season_id: str, locale: str = "en"):
 
     Security: puzzle data is stripped of solution-revealing keys (shift, key, method).
     Hints are replaced with hintCount; reveals are not included (use separate endpoints).
+    Locked seasons (unlock_date in the future) return 403.
     """
     pool = await get_pool()
+
+    # Check if season is date-unlocked
+    season_row = await pool.fetchrow(
+        "SELECT unlock_date FROM seasons WHERE id = $1 AND is_active = true",
+        season_id,
+    )
+    if season_row and not _is_date_unlocked(season_row["unlock_date"]):
+        return Response(
+            content=json.dumps({"error": "Season not yet available"}),
+            status_code=403,
+            media_type="application/json",
+        )
 
     # 1. Get stages for this season
     stage_rows = await pool.fetch(
@@ -137,7 +197,6 @@ async def get_season_content(season_id: str, locale: str = "en"):
             "stageId": row["stage_id"],
             "order": row["order"],
             "data": _strip_sensitive_data(raw_data),
-            "answerHash": t.get("answerHash", ""),
             "hints": [],
             "hintCount": len(hints),
         })
@@ -231,6 +290,14 @@ async def get_config():
 async def get_hint(puzzle_id: str, hint_index: int, locale: str = "en"):
     """Return a single hint for a puzzle by index (0-based)."""
     pool = await get_pool()
+
+    if not await _is_puzzle_accessible(pool, puzzle_id):
+        return Response(
+            content=json.dumps({"error": "Season not yet available"}),
+            status_code=403,
+            media_type="application/json",
+        )
+
     row = await pool.fetchrow(
         "SELECT translations FROM puzzles WHERE id = $1 AND is_active = true",
         puzzle_id,
@@ -268,6 +335,14 @@ async def get_hint(puzzle_id: str, hint_index: int, locale: str = "en"):
 async def get_reveal(puzzle_id: str, locale: str = "en"):
     """Return reveal data for a solved puzzle."""
     pool = await get_pool()
+
+    if not await _is_puzzle_accessible(pool, puzzle_id):
+        return Response(
+            content=json.dumps({"error": "Season not yet available"}),
+            status_code=403,
+            media_type="application/json",
+        )
+
     row = await pool.fetchrow(
         "SELECT puzzle_id, lore_unlock, translations FROM reveals WHERE puzzle_id = $1",
         puzzle_id,
@@ -308,6 +383,14 @@ class VerifyAnswerRequest(BaseModel):
 async def verify_answer(body: VerifyAnswerRequest):
     """Verify a puzzle answer hash against the stored hash."""
     pool = await get_pool()
+
+    if not await _is_puzzle_accessible(pool, body.puzzleId):
+        return Response(
+            content=json.dumps({"error": "Season not yet available"}),
+            status_code=403,
+            media_type="application/json",
+        )
+
     row = await pool.fetchrow(
         "SELECT translations FROM puzzles WHERE id = $1 AND is_active = true",
         body.puzzleId,
@@ -369,7 +452,8 @@ async def get_tts_audio(locale: str, narration_id: str, request: Request):
 async def get_content_version():
     """Return a content version hash so the app can detect updates.
 
-    The version changes whenever seasons/stages/puzzles/reveals are modified.
+    The version changes whenever seasons/stages/puzzles/reveals are modified,
+    or when a season transitions from locked→unlocked (unlock count changes).
     The app compares this against its cached version to know when to invalidate.
     """
     pool = await get_pool()
@@ -387,7 +471,20 @@ async def get_content_version():
         )::text AS version
         """
     )
-    version = row["version"] if row else "unknown"
+    base_version = row["version"] if row else "unknown"
+
+    # Include unlocked season count so version changes on lock→unlock transition
+    unlock_row = await pool.fetchrow(
+        """
+        SELECT COUNT(*) AS unlocked
+        FROM seasons
+        WHERE is_active = true
+          AND (unlock_date IS NULL OR unlock_date <= NOW())
+        """
+    )
+    unlocked_count = unlock_row["unlocked"] if unlock_row else 0
+    version = f"{base_version}|u{unlocked_count}"
+
     return Response(
         content=json.dumps({"version": version}),
         media_type="application/json",
