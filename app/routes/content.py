@@ -6,9 +6,12 @@ so no changes needed on the client parsing side.
 """
 
 import json
+import os
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Request, Response
+from fastapi.responses import FileResponse
 
+from ..auth import verify_token
 from ..database import get_pool
 
 router = APIRouter()
@@ -221,4 +224,72 @@ async def get_config():
         }),
         media_type="application/json",
         headers=CACHE_HEADERS,
+    )
+
+
+# ---------------------------------------------------------------------------
+# TTS Audio CDN — authenticated on-demand delivery
+# ---------------------------------------------------------------------------
+
+@router.get("/cdn/data/tts/{locale}/{narration_id}")
+async def get_tts_audio(locale: str, narration_id: str, request: Request):
+    """Serve TTS audio files. Requires Firebase auth."""
+    uid = await verify_token(request)
+    if not uid:
+        return Response(
+            content='{"error":"Unauthorized"}',
+            status_code=401,
+            media_type="application/json",
+        )
+
+    # Sanitize path components
+    safe_locale = locale.replace("/", "").replace("..", "")
+    safe_id = narration_id.replace("/", "").replace("..", "").removesuffix(".mp3")
+    path = f"static/data/tts/{safe_locale}/{safe_id}.mp3"
+
+    if not os.path.isfile(path):
+        return Response(
+            content='{"error":"Not found"}',
+            status_code=404,
+            media_type="application/json",
+        )
+
+    return FileResponse(
+        path,
+        media_type="audio/mpeg",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Content version — allows app to detect when content has been updated
+# ---------------------------------------------------------------------------
+
+@router.get("/content/version")
+async def get_content_version():
+    """Return a content version hash so the app can detect updates.
+
+    The version changes whenever seasons/stages/puzzles/reveals are modified.
+    The app compares this against its cached version to know when to invalidate.
+    """
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT COALESCE(
+            GREATEST(
+                (SELECT MAX(updated_at) FROM seasons),
+                (SELECT MAX(updated_at) FROM stages),
+                (SELECT MAX(updated_at) FROM puzzles),
+                (SELECT MAX(updated_at) FROM reveals),
+                (SELECT MAX(updated_at) FROM glossary)
+            ),
+            NOW()
+        )::text AS version
+        """
+    )
+    version = row["version"] if row else "unknown"
+    return Response(
+        content=json.dumps({"version": version}),
+        media_type="application/json",
+        headers={"Cache-Control": "no-cache"},
     )
