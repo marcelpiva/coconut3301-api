@@ -22,7 +22,7 @@ from ..limiter import limiter
 
 router = APIRouter()
 
-CACHE_HEADERS_PUBLIC = {"Cache-Control": "public, max-age=300", "Vary": "Authorization"}
+CACHE_HEADERS_PUBLIC = {"Cache-Control": "public, max-age=60"}
 CACHE_HEADERS_PRIVATE = {"Cache-Control": "private, no-store"}
 
 
