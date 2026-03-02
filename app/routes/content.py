@@ -3,6 +3,9 @@ Public content endpoints — serves puzzle/stage/season/reveal data to the Flutt
 
 Responses match the exact JSON shape that the app's fromJson() factories expect,
 so no changes needed on the client parsing side.
+
+Security: sensitive puzzle data (shift, key, method) is stripped from responses.
+Hints and reveals are served via separate on-demand endpoints.
 """
 
 import json
@@ -10,6 +13,7 @@ import os
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 from ..auth import verify_token
 from ..database import get_pool
@@ -17,6 +21,14 @@ from ..database import get_pool
 router = APIRouter()
 
 CACHE_HEADERS = {"Cache-Control": "public, max-age=300"}
+
+# Keys in puzzle `data` that reveal the solution — stripped from public responses.
+_SENSITIVE_DATA_KEYS = {"shift", "key", "method", "alphabet", "answer", "solution", "plaintext"}
+
+
+def _strip_sensitive_data(data: dict) -> dict:
+    """Return a copy of puzzle data with solution-revealing keys removed."""
+    return {k: v for k, v in data.items() if k not in _SENSITIVE_DATA_KEYS}
 
 
 def _extract_translation(translations: dict | str | None, locale: str) -> dict:
@@ -66,9 +78,10 @@ async def get_seasons(locale: str = "en"):
 
 @router.get("/content/season/{season_id}")
 async def get_season_content(season_id: str, locale: str = "en"):
-    """Return a season's full content (stages + puzzles + reveals).
+    """Return a season's content (stages + puzzles).
 
-    Response shape matches puzzles_{locale}.json / season_N_{locale}.json.
+    Security: puzzle data is stripped of solution-revealing keys (shift, key, method).
+    Hints are replaced with hintCount; reveals are not included (use separate endpoints).
     """
     pool = await get_pool()
 
@@ -99,7 +112,7 @@ async def get_season_content(season_id: str, locale: str = "en"):
             "seasonId": row["season_id"],
         })
 
-    # 2. Get puzzles for those stages
+    # 2. Get puzzles for those stages — strip sensitive data
     puzzle_rows = await pool.fetch(
         """
         SELECT id, type, stage_id, "order", translations
@@ -111,10 +124,11 @@ async def get_season_content(season_id: str, locale: str = "en"):
     )
 
     puzzles = []
-    puzzle_ids = []
     for row in puzzle_rows:
         t = _extract_translation(row["translations"], locale)
-        puzzle_ids.append(row["id"])
+        raw_data = t.get("data", {})
+        hints = t.get("hints", [])
+
         puzzles.append({
             "id": row["id"],
             "title": t.get("title", ""),
@@ -122,37 +136,18 @@ async def get_season_content(season_id: str, locale: str = "en"):
             "type": row["type"],
             "stageId": row["stage_id"],
             "order": row["order"],
-            "data": t.get("data", {}),
+            "data": _strip_sensitive_data(raw_data),
             "answerHash": t.get("answerHash", ""),
-            "hints": t.get("hints", []),
+            "hints": [],
+            "hintCount": len(hints),
         })
 
-    # 3. Get reveals for those puzzles
-    reveal_rows = await pool.fetch(
-        """
-        SELECT puzzle_id, lore_unlock, translations
-        FROM reveals
-        WHERE puzzle_id = ANY($1)
-        """,
-        puzzle_ids,
-    )
-
-    reveals = []
-    for row in reveal_rows:
-        t = _extract_translation(row["translations"], locale)
-        reveals.append({
-            "puzzleId": row["puzzle_id"],
-            "title": t.get("title", ""),
-            "classification": t.get("classification", ""),
-            "body": t.get("body", ""),
-            "loreUnlock": row["lore_unlock"],
-        })
+    # Reveals are NOT included — fetched on demand via /content/reveal/{puzzle_id}
 
     return Response(
         content=json.dumps({
             "stages": stages,
             "puzzles": puzzles,
-            "reveals": reveals,
         }),
         media_type="application/json",
         headers=CACHE_HEADERS,
@@ -224,6 +219,111 @@ async def get_config():
         }),
         media_type="application/json",
         headers=CACHE_HEADERS,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Hints — on-demand, one at a time
+# ---------------------------------------------------------------------------
+
+
+@router.get("/content/hint/{puzzle_id}/{hint_index}")
+async def get_hint(puzzle_id: str, hint_index: int, locale: str = "en"):
+    """Return a single hint for a puzzle by index (0-based)."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        "SELECT translations FROM puzzles WHERE id = $1 AND is_active = true",
+        puzzle_id,
+    )
+    if not row:
+        return Response(
+            content='{"error":"Puzzle not found"}',
+            status_code=404,
+            media_type="application/json",
+        )
+
+    t = _extract_translation(row["translations"], locale)
+    hints = t.get("hints", [])
+
+    if hint_index < 0 or hint_index >= len(hints):
+        return Response(
+            content='{"error":"Hint index out of range"}',
+            status_code=404,
+            media_type="application/json",
+        )
+
+    return Response(
+        content=json.dumps({"hint": hints[hint_index]}),
+        media_type="application/json",
+        headers=CACHE_HEADERS,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Reveals — on-demand, after puzzle is solved
+# ---------------------------------------------------------------------------
+
+
+@router.get("/content/reveal/{puzzle_id}")
+async def get_reveal(puzzle_id: str, locale: str = "en"):
+    """Return reveal data for a solved puzzle."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        "SELECT puzzle_id, lore_unlock, translations FROM reveals WHERE puzzle_id = $1",
+        puzzle_id,
+    )
+    if not row:
+        return Response(
+            content='{"error":"Reveal not found"}',
+            status_code=404,
+            media_type="application/json",
+        )
+
+    t = _extract_translation(row["translations"], locale)
+    return Response(
+        content=json.dumps({
+            "puzzleId": row["puzzle_id"],
+            "title": t.get("title", ""),
+            "classification": t.get("classification", ""),
+            "body": t.get("body", ""),
+            "loreUnlock": row["lore_unlock"],
+        }),
+        media_type="application/json",
+        headers=CACHE_HEADERS,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Answer verification — server-side check
+# ---------------------------------------------------------------------------
+
+
+class VerifyAnswerRequest(BaseModel):
+    puzzleId: str
+    answerHash: str
+    locale: str = "en"
+
+
+@router.post("/content/verify-answer")
+async def verify_answer(body: VerifyAnswerRequest):
+    """Verify a puzzle answer hash against the stored hash."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        "SELECT translations FROM puzzles WHERE id = $1 AND is_active = true",
+        body.puzzleId,
+    )
+    if not row:
+        return Response(
+            content=json.dumps({"correct": False}),
+            media_type="application/json",
+        )
+
+    t = _extract_translation(row["translations"], body.locale)
+    stored_hash = t.get("answerHash", "")
+
+    return Response(
+        content=json.dumps({"correct": body.answerHash == stored_hash}),
+        media_type="application/json",
     )
 
 
