@@ -24,6 +24,16 @@ router = APIRouter()
 
 CACHE_HEADERS = {"Cache-Control": "public, max-age=300"}
 
+
+async def _soft_auth(request: Request) -> str | None:
+    """Verify token but don't block — log warning if missing/invalid."""
+    uid = await verify_token(request)
+    if not uid:
+        auth_header = request.headers.get("Authorization", "")
+        has_token = bool(auth_header)
+        print(f"[CONTENT] Unauthenticated request: path={request.url.path} has_token={has_token}")
+    return uid
+
 # Keys in puzzle `data` that reveal the solution — stripped from public responses.
 _SENSITIVE_DATA_KEYS = {"shift", "key", "method", "alphabet", "answer", "solution", "plaintext"}
 
@@ -76,9 +86,7 @@ def _extract_translation(translations: dict | str | None, locale: str) -> dict:
 @limiter.limit("60/minute")
 async def get_seasons(request: Request, locale: str = "en"):
     """Return all active seasons in the same format as seasons_{locale}.json."""
-    uid = await verify_token(request)
-    if not uid:
-        return Response(content='{"error":"Unauthorized"}', status_code=401, media_type="application/json")
+    await _soft_auth(request)
     pool = await get_pool()
     rows = await pool.fetch(
         """
@@ -137,9 +145,7 @@ async def get_season_content(request: Request, season_id: str, locale: str = "en
     Hints are replaced with hintCount; reveals are not included (use separate endpoints).
     Locked seasons (unlock_date in the future) return 403.
     """
-    uid = await verify_token(request)
-    if not uid:
-        return Response(content='{"error":"Unauthorized"}', status_code=401, media_type="application/json")
+    await _soft_auth(request)
     pool = await get_pool()
 
     # Check if season is date-unlocked
@@ -226,9 +232,7 @@ async def get_season_content(request: Request, season_id: str, locale: str = "en
 @limiter.limit("60/minute")
 async def get_glossary(request: Request, locale: str = "en"):
     """Return all active glossary entries with translations flattened for the locale."""
-    uid = await verify_token(request)
-    if not uid:
-        return Response(content='{"error":"Unauthorized"}', status_code=401, media_type="application/json")
+    await _soft_auth(request)
     pool = await get_pool()
     rows = await pool.fetch(
         """
@@ -303,9 +307,7 @@ async def get_config():
 @limiter.limit("10/minute")
 async def get_hint(request: Request, puzzle_id: str, hint_index: int, locale: str = "en"):
     """Return a single hint for a puzzle by index (0-based)."""
-    uid = await verify_token(request)
-    if not uid:
-        return Response(content='{"error":"Unauthorized"}', status_code=401, media_type="application/json")
+    await _soft_auth(request)
     pool = await get_pool()
 
     if not await _is_puzzle_accessible(pool, puzzle_id):
@@ -352,9 +354,7 @@ async def get_hint(request: Request, puzzle_id: str, hint_index: int, locale: st
 @limiter.limit("10/minute")
 async def get_reveal(request: Request, puzzle_id: str, locale: str = "en"):
     """Return reveal data for a solved puzzle."""
-    uid = await verify_token(request)
-    if not uid:
-        return Response(content='{"error":"Unauthorized"}', status_code=401, media_type="application/json")
+    await _soft_auth(request)
     pool = await get_pool()
 
     if not await _is_puzzle_accessible(pool, puzzle_id):
