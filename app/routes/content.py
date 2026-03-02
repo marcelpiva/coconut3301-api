@@ -30,7 +30,11 @@ _UNAUTHORIZED = Response(content='{"error":"Unauthorized"}', status_code=401, me
 
 async def _require_auth(request: Request) -> str | None:
     """Verify Firebase token. Returns uid or None."""
-    return await verify_token(request)
+    uid = await verify_token(request)
+    auth_header = request.headers.get("Authorization", "")
+    has_bearer = auth_header.startswith("Bearer ") if auth_header else False
+    print(f"[AUTH] {request.url.path} has_bearer={has_bearer} uid={uid}")
+    return uid
 
 
 async def _get_user_unlocked_seasons(pool, uid: str) -> set:
