@@ -4,14 +4,21 @@ FastAPI backend for the Coconut 3301 puzzle app. Handles user progress sync, lea
 
 ## Endpoints
 
-### Public Content (`/api/v1/content`)
+### Content (`/api/v1/content`)
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/content/seasons` | GET | List active seasons with translations (locale param) |
-| `/content/season/{season_id}` | GET | Full season content (stages + puzzles + reveals) |
-| `/content/glossary` | GET | Glossary entries with translations |
-| `/content/config` | GET | App config (puzzle source, maintenance mode, min version) |
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/content/seasons` | GET | Soft | List active seasons (per-user unlocks with token, date-based without) |
+| `/content/season/{season_id}` | GET | Soft | Season content — stages + puzzles (sensitive data stripped) |
+| `/content/glossary` | GET | Soft | Glossary entries with translations |
+| `/content/config` | GET | No | App config (puzzle source, maintenance mode, min version) |
+| `/content/version` | GET | No | Content version hash for cache invalidation |
+| `/content/hint/{puzzle_id}/{hint_index}` | GET | Hard | Single hint by index (0-based) |
+| `/content/reveal/{puzzle_id}` | GET | Hard | Reveal data for a solved puzzle |
+| `/content/verify-answer` | POST | No | Server-side answer hash verification |
+| `/cdn/data/tts/{locale}/{narration_id}` | GET | Hard | TTS audio file delivery |
+
+**Auth modes**: Soft = token verified if present but not required (enables per-user unlocks); Hard = 401 if no valid token.
 
 ### User Progress (`/api/v1/progress`)
 

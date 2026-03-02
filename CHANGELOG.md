@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.0 — 2026-03-02
+
+### Fixed
+- Soft auth on listing endpoints (seasons, season content, glossary) — no longer returns 401 for unauthenticated requests
+- Null-safe JSON field serialization (`dict.get("key") or ""` instead of `dict.get("key", "")`)
+- Auth-aware cache headers: `private, no-store` for authenticated responses, `public` with `Vary: Authorization` for public responses
+
+### Changed
+- Content security model: listing endpoints use soft auth (per-user unlocks when token present, date-based fallback otherwise); hints and reveals require hard auth (401)
+- Hard auth kept only on spoiler-sensitive endpoints (`/content/hint`, `/content/reveal`)
+
 ## 1.0.0 — 2026-02-28
 
 ### Added
