@@ -28,8 +28,27 @@ CACHE_HEADERS = {"Cache-Control": "public, max-age=300"}
 _UNAUTHORIZED = Response(content='{"error":"Unauthorized"}', status_code=401, media_type="application/json")
 
 
+async def _soft_auth(request: Request) -> str | None:
+    """Verify Firebase token but don't block — returns uid or None.
+
+    Used for listing endpoints (seasons, season content, glossary) where
+    content is already stripped of sensitive data. When uid is available,
+    per-user unlocks are applied; otherwise falls back to date-based unlocks.
+    """
+    uid = await verify_token(request)
+    auth_header = request.headers.get("Authorization", "")
+    has_bearer = auth_header.startswith("Bearer ") if auth_header else False
+    if not uid and has_bearer:
+        print(f"[AUTH] {request.url.path} token provided but invalid")
+    return uid
+
+
 async def _require_auth(request: Request) -> str | None:
-    """Verify Firebase token. Returns uid or None."""
+    """Verify Firebase token — hard requirement for spoiler-sensitive endpoints.
+
+    Used for hints and reveals where content is a spoiler.
+    Returns uid or None (caller should return 401 if None).
+    """
     uid = await verify_token(request)
     auth_header = request.headers.get("Authorization", "")
     has_bearer = auth_header.startswith("Bearer ") if auth_header else False
@@ -109,12 +128,10 @@ def _extract_translation(translations: dict | str | None, locale: str) -> dict:
 @limiter.limit("60/minute")
 async def get_seasons(request: Request, locale: str = "en"):
     """Return all active seasons in the same format as seasons_{locale}.json."""
-    uid = await _require_auth(request)
-    if not uid:
-        return _UNAUTHORIZED
+    uid = await _soft_auth(request)
     pool = await get_pool()
 
-    user_seasons = await _get_user_unlocked_seasons(pool, uid)
+    user_seasons = await _get_user_unlocked_seasons(pool, uid) if uid else {"season_1"}
 
     rows = await pool.fetch(
         """
@@ -173,12 +190,10 @@ async def get_season_content(request: Request, season_id: str, locale: str = "en
     Hints are replaced with hintCount; reveals are not included (use separate endpoints).
     Locked seasons (unlock_date in the future) return 403.
     """
-    uid = await _require_auth(request)
-    if not uid:
-        return _UNAUTHORIZED
+    uid = await _soft_auth(request)
     pool = await get_pool()
 
-    user_seasons = await _get_user_unlocked_seasons(pool, uid)
+    user_seasons = await _get_user_unlocked_seasons(pool, uid) if uid else {"season_1"}
 
     # Check if season is accessible (date-unlocked or user-unlocked)
     season_row = await pool.fetchrow(
@@ -264,9 +279,7 @@ async def get_season_content(request: Request, season_id: str, locale: str = "en
 @limiter.limit("60/minute")
 async def get_glossary(request: Request, locale: str = "en"):
     """Return all active glossary entries with translations flattened for the locale."""
-    uid = await _require_auth(request)
-    if not uid:
-        return _UNAUTHORIZED
+    await _soft_auth(request)  # log auth status but don't block
     pool = await get_pool()
     rows = await pool.fetch(
         """
