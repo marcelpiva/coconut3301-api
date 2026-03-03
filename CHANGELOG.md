@@ -7,6 +7,7 @@
 - Null-safe JSON field serialization (`dict.get("key") or ""` instead of `dict.get("key", "")`)
 - CORS: added `allow_credentials=True` and `X-Session-Cookie` to allowed headers
 - Removed `Vary: Authorization` from cache headers (was conflicting with CORS `Vary: Origin`)
+- `/content/version` endpoint: removed `reveals`/`glossary` from GREATEST query (missing `updated_at` column caused 500), added try/catch fallback
 - Auth-aware cache headers: `private, no-store` for authenticated responses, `public, max-age=60` for public
 
 ### Changed
