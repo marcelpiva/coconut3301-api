@@ -5,7 +5,9 @@
 ### Fixed
 - Soft auth on listing endpoints (seasons, season content, glossary) — no longer returns 401 for unauthenticated requests
 - Null-safe JSON field serialization (`dict.get("key") or ""` instead of `dict.get("key", "")`)
-- Auth-aware cache headers: `private, no-store` for authenticated responses, `public` with `Vary: Authorization` for public responses
+- CORS: added `allow_credentials=True` and `X-Session-Cookie` to allowed headers
+- Removed `Vary: Authorization` from cache headers (was conflicting with CORS `Vary: Origin`)
+- Auth-aware cache headers: `private, no-store` for authenticated responses, `public, max-age=60` for public
 
 ### Changed
 - Content security model: listing endpoints use soft auth (per-user unlocks when token present, date-based fallback otherwise); hints and reveals require hard auth (401)
