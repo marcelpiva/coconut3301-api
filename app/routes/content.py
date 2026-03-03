@@ -528,40 +528,36 @@ async def get_tts_audio(locale: str, narration_id: str, request: Request):
 
 @router.get("/content/version")
 async def get_content_version():
-    """Return a content version hash so the app can detect updates.
+    """Return a content version hash so the app can detect updates."""
+    try:
+        pool = await get_pool()
+        row = await pool.fetchrow(
+            """
+            SELECT COALESCE(
+                GREATEST(
+                    (SELECT MAX(updated_at) FROM seasons),
+                    (SELECT MAX(updated_at) FROM stages),
+                    (SELECT MAX(updated_at) FROM puzzles)
+                ),
+                NOW()
+            )::text AS version
+            """
+        )
+        base_version = row["version"] if row else "unknown"
 
-    The version changes whenever seasons/stages/puzzles/reveals are modified,
-    or when a season transitions from locked→unlocked (unlock count changes).
-    The app compares this against its cached version to know when to invalidate.
-    """
-    pool = await get_pool()
-    row = await pool.fetchrow(
-        """
-        SELECT COALESCE(
-            GREATEST(
-                (SELECT MAX(updated_at) FROM seasons),
-                (SELECT MAX(updated_at) FROM stages),
-                (SELECT MAX(updated_at) FROM puzzles),
-                (SELECT MAX(updated_at) FROM reveals),
-                (SELECT MAX(updated_at) FROM glossary)
-            ),
-            NOW()
-        )::text AS version
-        """
-    )
-    base_version = row["version"] if row else "unknown"
-
-    # Include unlocked season count so version changes on lock→unlock transition
-    unlock_row = await pool.fetchrow(
-        """
-        SELECT COUNT(*) AS unlocked
-        FROM seasons
-        WHERE is_active = true
-          AND (unlock_date IS NULL OR unlock_date <= NOW())
-        """
-    )
-    unlocked_count = unlock_row["unlocked"] if unlock_row else 0
-    version = f"{base_version}|u{unlocked_count}"
+        unlock_row = await pool.fetchrow(
+            """
+            SELECT COUNT(*) AS unlocked
+            FROM seasons
+            WHERE is_active = true
+              AND (unlock_date IS NULL OR unlock_date <= NOW())
+            """
+        )
+        unlocked_count = unlock_row["unlocked"] if unlock_row else 0
+        version = f"{base_version}|u{unlocked_count}"
+    except Exception as e:
+        print(f"[VERSION] Error: {e}")
+        version = "error"
 
     return Response(
         content=json.dumps({"version": version}),
