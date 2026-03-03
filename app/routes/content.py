@@ -460,9 +460,11 @@ class VerifyAnswerRequest(BaseModel):
 @limiter.limit("30/minute")
 async def verify_answer(request: Request, body: VerifyAnswerRequest):
     """Verify a puzzle answer hash against the stored hash."""
+    uid = await _soft_auth(request)
     pool = await get_pool()
 
-    if not await _is_puzzle_accessible(pool, body.puzzleId):
+    user_seasons = await _get_user_unlocked_seasons(pool, uid) if uid else {"season_1"}
+    if not await _is_puzzle_accessible(pool, body.puzzleId, user_seasons):
         return Response(
             content=json.dumps({"error": "Season not yet available"}),
             status_code=403,
