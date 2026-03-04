@@ -74,7 +74,7 @@ def _is_season_accessible(unlock_date_str: str | None, season_id: str, user_seas
 
 
 # Keys in puzzle `data` that reveal the solution — stripped from public responses.
-_SENSITIVE_DATA_KEYS = {"shift", "key", "method", "alphabet", "answer", "solution", "plaintext"}
+_SENSITIVE_DATA_KEYS = {"shift", "key", "alphabet", "answer", "solution", "plaintext"}
 
 
 def _strip_sensitive_data(data: dict) -> dict:
