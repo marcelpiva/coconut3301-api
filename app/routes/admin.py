@@ -519,12 +519,26 @@ async def get_config(request: Request):
     pool = await get_pool()
     row = await pool.fetchrow("SELECT * FROM app_config WHERE key = 'main'")
     if not row:
-        return {"puzzleSource": "remote", "maintenanceMode": False, "minAppVersion": "1.0.0"}
+        return {
+            "puzzleSource": "remote",
+            "maintenanceMode": False,
+            "minAppVersion": "1.0.0",
+            "decoderEnabled": True,
+            "decoderMaxSlots": 5,
+            "decoderActivationDurationSecs": 300,
+            "decoderCooldownSecs": 600,
+            "decoderGracePeriodSecs": 120,
+        }
 
     return {
         "puzzleSource": row["puzzle_source"],
         "maintenanceMode": row["maintenance_mode"],
         "minAppVersion": row["min_app_version"],
+        "decoderEnabled": row.get("decoder_enabled", True),
+        "decoderMaxSlots": row.get("decoder_max_slots", 5),
+        "decoderActivationDurationSecs": row.get("decoder_activation_duration_secs", 300),
+        "decoderCooldownSecs": row.get("decoder_cooldown_secs", 600),
+        "decoderGracePeriodSecs": row.get("decoder_grace_period_secs", 120),
     }
 
 
@@ -544,24 +558,39 @@ async def update_config(request: Request):
         await pool.execute(
             """
             UPDATE app_config SET puzzle_source = $1, maintenance_mode = $2,
-                min_app_version = $3, updated_at = $4
+                min_app_version = $3, updated_at = $4,
+                decoder_enabled = $5, decoder_max_slots = $6,
+                decoder_activation_duration_secs = $7, decoder_cooldown_secs = $8,
+                decoder_grace_period_secs = $9
             WHERE key = 'main'
             """,
             body.get("puzzleSource", existing["puzzle_source"]),
             body.get("maintenanceMode", existing["maintenance_mode"]),
             body.get("minAppVersion", existing["min_app_version"]),
             now,
+            body.get("decoderEnabled", existing.get("decoder_enabled", True)),
+            body.get("decoderMaxSlots", existing.get("decoder_max_slots", 5)),
+            body.get("decoderActivationDurationSecs", existing.get("decoder_activation_duration_secs", 300)),
+            body.get("decoderCooldownSecs", existing.get("decoder_cooldown_secs", 600)),
+            body.get("decoderGracePeriodSecs", existing.get("decoder_grace_period_secs", 120)),
         )
     else:
         await pool.execute(
             """
-            INSERT INTO app_config (key, puzzle_source, maintenance_mode, min_app_version, updated_at)
-            VALUES ('main', $1, $2, $3, $4)
+            INSERT INTO app_config (key, puzzle_source, maintenance_mode, min_app_version, updated_at,
+                decoder_enabled, decoder_max_slots, decoder_activation_duration_secs,
+                decoder_cooldown_secs, decoder_grace_period_secs)
+            VALUES ('main', $1, $2, $3, $4, $5, $6, $7, $8, $9)
             """,
             body.get("puzzleSource", "remote"),
             body.get("maintenanceMode", False),
             body.get("minAppVersion", "1.0.0"),
             now,
+            body.get("decoderEnabled", True),
+            body.get("decoderMaxSlots", 5),
+            body.get("decoderActivationDurationSecs", 300),
+            body.get("decoderCooldownSecs", 600),
+            body.get("decoderGracePeriodSecs", 120),
         )
 
     await _audit_log(
@@ -743,3 +772,43 @@ async def delete_glossary_entry(entry_id: str, request: Request):
     await pool.execute("DELETE FROM glossary WHERE id = $1", entry_id)
     await _audit_log(admin, "delete", "glossary", entry_id, before=dict(existing))
     return {"success": True}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DECODER STATS
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/admin/decoder-stats")
+async def get_decoder_stats(request: Request):
+    admin = await verify_admin(request)
+    if not admin or admin["role"] not in ROLES_ADMIN_PLUS:
+        return _unauthorized()
+
+    pool = await get_pool()
+    now = datetime.now(timezone.utc).isoformat()
+
+    active_row = await pool.fetchrow(
+        "SELECT COUNT(*) as cnt FROM decoder_activations WHERE status = 'active' AND expires_at > $1",
+        now,
+    )
+    queue_row = await pool.fetchrow(
+        "SELECT COUNT(*) as cnt FROM decoder_queue WHERE status IN ('waiting', 'notified')",
+    )
+    recent = await pool.fetch(
+        """SELECT uid, activated_at, expires_at, status FROM decoder_activations
+           ORDER BY activated_at DESC LIMIT 10""",
+    )
+
+    return {
+        "activeCount": active_row["cnt"] if active_row else 0,
+        "queueLength": queue_row["cnt"] if queue_row else 0,
+        "recentActivations": [
+            {
+                "uid": r["uid"],
+                "activatedAt": r["activated_at"],
+                "expiresAt": r["expires_at"],
+                "status": r["status"],
+            }
+            for r in recent
+        ],
+    }

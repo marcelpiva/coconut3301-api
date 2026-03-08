@@ -124,6 +124,7 @@ def _should_send(prefs: dict, category: str) -> bool:
         "new_content": "new_content",
         "broadcast": None,  # Always send broadcasts
         "general": None,
+        "decoder_tools": None,  # Always send decoder notifications
     }
     pref_key = category_map.get(category)
     if pref_key is None:
