@@ -27,21 +27,22 @@ def _unauthorized():
 
 async def _get_config(pool):
     """Fetch decoder config from app_config table."""
+    defaults = {
+        "enabled": True,
+        "max_slots": 5,
+        "activation_duration_secs": 300,
+        "cooldown_secs": 600,
+        "grace_period_secs": 120,
+    }
     row = await pool.fetchrow("SELECT * FROM app_config WHERE key = 'main'")
     if not row:
-        return {
-            "enabled": True,
-            "max_slots": 5,
-            "activation_duration_secs": 300,
-            "cooldown_secs": 600,
-            "grace_period_secs": 120,
-        }
+        return defaults
     return {
-        "enabled": row.get("decoder_enabled", True),
-        "max_slots": row.get("decoder_max_slots", 5),
-        "activation_duration_secs": row.get("decoder_activation_duration_secs", 300),
-        "cooldown_secs": row.get("decoder_cooldown_secs", 600),
-        "grace_period_secs": row.get("decoder_grace_period_secs", 120),
+        "enabled": row["decoder_enabled"] if "decoder_enabled" in row else defaults["enabled"],
+        "max_slots": row["decoder_max_slots"] if "decoder_max_slots" in row else defaults["max_slots"],
+        "activation_duration_secs": row["decoder_activation_duration_secs"] if "decoder_activation_duration_secs" in row else defaults["activation_duration_secs"],
+        "cooldown_secs": row["decoder_cooldown_secs"] if "decoder_cooldown_secs" in row else defaults["cooldown_secs"],
+        "grace_period_secs": row["decoder_grace_period_secs"] if "decoder_grace_period_secs" in row else defaults["grace_period_secs"],
     }
 
 
