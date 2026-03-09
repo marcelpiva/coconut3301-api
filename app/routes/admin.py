@@ -724,6 +724,7 @@ async def list_glossary(request: Request):
         {
             "id": r["id"],
             "order": r["order"],
+            "seriesId": r["series_id"],
             "isActive": r["is_active"],
             "translations": r["translations"] if isinstance(r["translations"], dict) else json.loads(r["translations"]),
             "createdAt": r["created_at"],
@@ -745,12 +746,13 @@ async def create_glossary_entry(request: Request):
 
     await pool.execute(
         """
-        INSERT INTO glossary (id, "order", is_active, translations, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO glossary (id, "order", is_active, series_id, translations, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         """,
         body["id"],
         body.get("order", 0),
         body.get("isActive", True),
+        body.get("seriesId"),
         json.dumps(body.get("translations", {})),
         now,
         now,
@@ -776,12 +778,13 @@ async def update_glossary_entry(entry_id: str, request: Request):
 
     await pool.execute(
         """
-        UPDATE glossary SET "order" = $2, is_active = $3, translations = $4, updated_at = $5
+        UPDATE glossary SET "order" = $2, is_active = $3, series_id = $4, translations = $5, updated_at = $6
         WHERE id = $1
         """,
         entry_id,
         body.get("order", existing["order"]),
         body.get("isActive", existing["is_active"]),
+        body.get("seriesId", existing["series_id"]),
         json.dumps(body.get("translations", existing["translations"])),
         now,
     )

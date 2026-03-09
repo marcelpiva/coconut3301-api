@@ -376,18 +376,34 @@ async def get_season_content(request: Request, season_id: str, locale: str = "en
 
 @router.get("/content/glossary")
 @limiter.limit("60/minute")
-async def get_glossary(request: Request, locale: str = "en"):
-    """Return all active glossary entries with translations flattened for the locale."""
+async def get_glossary(request: Request, locale: str = "en", series_id: str | None = None):
+    """Return all active glossary entries with translations flattened for the locale.
+
+    When series_id is provided, returns universal entries (series_id IS NULL)
+    plus entries matching that series. Otherwise returns all active entries.
+    """
     await _soft_auth(request)  # log auth status but don't block
     pool = await get_pool()
-    rows = await pool.fetch(
-        """
-        SELECT id, "order", translations
-        FROM glossary
-        WHERE is_active = true
-        ORDER BY "order" ASC
-        """
-    )
+
+    if series_id:
+        rows = await pool.fetch(
+            """
+            SELECT id, "order", series_id, translations
+            FROM glossary
+            WHERE is_active = true AND (series_id IS NULL OR series_id = $1)
+            ORDER BY "order" ASC
+            """,
+            series_id,
+        )
+    else:
+        rows = await pool.fetch(
+            """
+            SELECT id, "order", series_id, translations
+            FROM glossary
+            WHERE is_active = true
+            ORDER BY "order" ASC
+            """
+        )
 
     entries = []
     for row in rows:
@@ -397,6 +413,7 @@ async def get_glossary(request: Request, locale: str = "en"):
         entries.append({
             "id": row["id"],
             "order": row["order"],
+            "seriesId": row["series_id"],
             "term": t.get("term") or "",
             "aliases": t.get("aliases") or [],
             "summary": t.get("summary") or "",
