@@ -125,10 +125,44 @@ def _extract_translation(translations: dict | str | None, locale: str) -> dict:
     return translations.get(locale) or translations.get("en") or {}
 
 
-@router.get("/content/seasons")
+@router.get("/content/series")
 @limiter.limit("60/minute")
-async def get_seasons(request: Request, locale: str = "en"):
-    """Return all active seasons in the same format as seasons_{locale}.json."""
+async def get_series(request: Request, locale: str = "en"):
+    """Return all active series."""
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT id, "order", translations, is_active, cover_image
+        FROM series
+        WHERE is_active = true
+        ORDER BY "order" ASC
+        """
+    )
+
+    result = []
+    for row in rows:
+        t = _extract_translation(row["translations"], locale)
+        result.append({
+            "id": row["id"],
+            "name": t.get("name") or "",
+            "subtitle": t.get("subtitle") or "",
+            "description": t.get("description") or "",
+            "synopsis": t.get("synopsis") or "",
+            "order": row["order"],
+            "coverImage": row["cover_image"],
+        })
+
+    return Response(
+        content=json.dumps({"series": result}),
+        media_type="application/json",
+        headers=CACHE_HEADERS_PUBLIC,
+    )
+
+
+@router.get("/content/series/{series_id}/seasons")
+@limiter.limit("60/minute")
+async def get_series_seasons(request: Request, series_id: str, locale: str = "en"):
+    """Return all active seasons for a specific series."""
     uid = await _soft_auth(request)
     pool = await get_pool()
 
@@ -139,9 +173,10 @@ async def get_seasons(request: Request, locale: str = "en"):
         SELECT id, "order", stage_ids, required_season_id, unlock_date,
                translations, is_active
         FROM seasons
-        WHERE is_active = true
+        WHERE is_active = true AND series_id = $1
         ORDER BY "order" ASC
-        """
+        """,
+        series_id,
     )
 
     seasons = []
@@ -160,11 +195,72 @@ async def get_seasons(request: Request, locale: str = "en"):
                 "requiredSeasonId": row["required_season_id"],
                 "unlockDate": row["unlock_date"],
                 "preview": t.get("preview"),
+                "seriesId": series_id,
+            })
+        else:
+            seasons.append({
+                "id": row["id"],
+                "name": t.get("name") or "",
+                "subtitle": t.get("subtitle") or "",
+                "description": "",
+                "order": row["order"],
+                "stageIds": [],
+                "requiredSeasonId": row["required_season_id"],
+                "unlockDate": row["unlock_date"],
+                "preview": t.get("preview"),
+                "seriesId": series_id,
+            })
+
+    cache = CACHE_HEADERS_PRIVATE if uid else CACHE_HEADERS_PUBLIC
+    return Response(
+        content=json.dumps({"seasons": seasons}),
+        media_type="application/json",
+        headers=cache,
+    )
+
+
+@router.get("/content/seasons")
+@limiter.limit("60/minute")
+async def get_seasons(request: Request, locale: str = "en"):
+    """Return all active seasons in the same format as seasons_{locale}.json."""
+    uid = await _soft_auth(request)
+    pool = await get_pool()
+
+    user_seasons = await _get_user_unlocked_seasons(pool, uid) if uid else {"season_1"}
+
+    rows = await pool.fetch(
+        """
+        SELECT id, series_id, "order", stage_ids, required_season_id, unlock_date,
+               translations, is_active
+        FROM seasons
+        WHERE is_active = true
+        ORDER BY "order" ASC
+        """
+    )
+
+    seasons = []
+    for row in rows:
+        t = _extract_translation(row["translations"], locale)
+        accessible = _is_season_accessible(row["unlock_date"], row["id"], user_seasons)
+
+        if accessible:
+            seasons.append({
+                "id": row["id"],
+                "seriesId": row["series_id"],
+                "name": t.get("name") or "",
+                "subtitle": t.get("subtitle") or "",
+                "description": t.get("description") or "",
+                "order": row["order"],
+                "stageIds": row["stage_ids"] or [],
+                "requiredSeasonId": row["required_season_id"],
+                "unlockDate": row["unlock_date"],
+                "preview": t.get("preview"),
             })
         else:
             # Locked season: minimal metadata only, no content references
             seasons.append({
                 "id": row["id"],
+                "seriesId": row["series_id"],
                 "name": t.get("name") or "",
                 "subtitle": t.get("subtitle") or "",
                 "description": "",

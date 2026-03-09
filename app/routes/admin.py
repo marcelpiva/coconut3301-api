@@ -72,6 +72,109 @@ async def _audit_log(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# SERIES
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/admin/series")
+async def list_series(request: Request):
+    admin = await verify_admin(request)
+    if not admin or admin["role"] not in ROLES_EDITOR_PLUS:
+        return _unauthorized()
+
+    pool = await get_pool()
+    rows = await pool.fetch('SELECT * FROM series ORDER BY "order" ASC')
+
+    return [
+        {
+            "id": r["id"],
+            "order": r["order"],
+            "translations": r["translations"] if isinstance(r["translations"], dict) else json.loads(r["translations"]),
+            "isActive": r["is_active"],
+            "coverImage": r["cover_image"],
+            "createdAt": r["created_at"],
+            "updatedAt": r["updated_at"],
+        }
+        for r in rows
+    ]
+
+
+@router.post("/admin/series")
+async def create_series(request: Request):
+    admin = await verify_admin(request)
+    if not admin or admin["role"] not in ROLES_EDITOR_PLUS:
+        return _unauthorized()
+
+    body = await request.json()
+    now = datetime.now(timezone.utc).isoformat()
+    pool = await get_pool()
+
+    await pool.execute(
+        """
+        INSERT INTO series (id, "order", translations, is_active, cover_image, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        """,
+        body["id"],
+        body["order"],
+        json.dumps(body.get("translations", {})),
+        body.get("isActive", True),
+        body.get("coverImage"),
+        now,
+        now,
+    )
+
+    await _audit_log(admin, "create", "series", body["id"], after=body)
+    return {"success": True}
+
+
+@router.put("/admin/series/{series_id}")
+async def update_series(series_id: str, request: Request):
+    admin = await verify_admin(request)
+    if not admin or admin["role"] not in ROLES_EDITOR_PLUS:
+        return _unauthorized()
+
+    pool = await get_pool()
+    existing = await pool.fetchrow("SELECT * FROM series WHERE id = $1", series_id)
+    if not existing:
+        return _not_found("Series")
+
+    body = await request.json()
+    now = datetime.now(timezone.utc).isoformat()
+
+    await pool.execute(
+        """
+        UPDATE series SET "order" = $2, translations = $3, is_active = $4,
+            cover_image = $5, updated_at = $6
+        WHERE id = $1
+        """,
+        series_id,
+        body.get("order", existing["order"]),
+        json.dumps(body.get("translations", existing["translations"])),
+        body.get("isActive", existing["is_active"]),
+        body.get("coverImage", existing["cover_image"]),
+        now,
+    )
+
+    await _audit_log(admin, "update", "series", series_id, before=dict(existing), after=body)
+    return {"success": True}
+
+
+@router.delete("/admin/series/{series_id}")
+async def delete_series(series_id: str, request: Request):
+    admin = await verify_admin(request)
+    if not admin or admin["role"] not in ROLES_SUPER_ADMIN:
+        return _forbidden()
+
+    pool = await get_pool()
+    existing = await pool.fetchrow("SELECT * FROM series WHERE id = $1", series_id)
+    if not existing:
+        return _not_found("Series")
+
+    await pool.execute("DELETE FROM series WHERE id = $1", series_id)
+    await _audit_log(admin, "delete", "series", series_id, before=dict(existing))
+    return {"success": True}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # SEASONS
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -87,6 +190,7 @@ async def list_seasons(request: Request):
     return [
         {
             "id": r["id"],
+            "seriesId": r["series_id"],
             "order": r["order"],
             "stageIds": r["stage_ids"] or [],
             "requiredSeasonId": r["required_season_id"],
@@ -112,11 +216,12 @@ async def create_season(request: Request):
 
     await pool.execute(
         """
-        INSERT INTO seasons (id, "order", stage_ids, required_season_id, unlock_date,
+        INSERT INTO seasons (id, series_id, "order", stage_ids, required_season_id, unlock_date,
                              translations, is_active, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         """,
         body["id"],
+        body.get("seriesId", "cartel_do_coco"),
         body["order"],
         body.get("stageIds", []),
         body.get("requiredSeasonId"),
@@ -147,11 +252,12 @@ async def update_season(season_id: str, request: Request):
 
     await pool.execute(
         """
-        UPDATE seasons SET "order" = $2, stage_ids = $3, required_season_id = $4,
-            unlock_date = $5, translations = $6, is_active = $7, updated_at = $8
+        UPDATE seasons SET series_id = $2, "order" = $3, stage_ids = $4, required_season_id = $5,
+            unlock_date = $6, translations = $7, is_active = $8, updated_at = $9
         WHERE id = $1
         """,
         season_id,
+        body.get("seriesId", existing["series_id"]),
         body.get("order", existing["order"]),
         body.get("stageIds", existing["stage_ids"]),
         body.get("requiredSeasonId", existing["required_season_id"]),
